@@ -42,64 +42,41 @@ class EvalWrapper(gym.Wrapper):
         return state, info
 
 
-class ReplayBuffer:
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.buffer = []
-        self.position = 0
-
-    def push(self, state, action, reward, next_state, done):
-        if len(self.buffer) < self.capacity:
-            self.buffer.append(None)
-        self.buffer[self.position] = (state, action, reward, next_state, done)
-        self.position = (self.position + 1) % self.capacity
-
-    def sample(self, batch_size):
-        batch = np.random.choice(len(self.buffer), batch_size, replace=False)
-        samples = [self.buffer[i] for i in batch]
-
-        # Convert lists to numpy arrays before creating tensors for better performance
-        states = np.array([s[0] for s in samples])
-        actions = np.array([s[1] for s in samples])
-        rewards = np.array([s[2] for s in samples])
-        next_states = np.array([s[3] for s in samples])
-        dones = np.array([s[4] for s in samples])
-
-        return (
-            torch.FloatTensor(states),
-            torch.FloatTensor(actions),
-            torch.FloatTensor(rewards).unsqueeze(1),
-            torch.FloatTensor(next_states),
-            torch.FloatTensor(dones).unsqueeze(1),
-        )
-
-    def __len__(self):
-        return len(self.buffer)
-
-
-class Actor(nn.Module):
+class ActorCritic(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim=256, max_action=1.0):
-        super(Actor, self).__init__()
-        self.net = nn.Sequential(
+        super(ActorCritic, self).__init__()
+
+        # Shared layers
+        self.shared = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
         )
 
-        self.mean = nn.Linear(hidden_dim, action_dim)
-        self.log_std = nn.Linear(hidden_dim, action_dim)
+        # Actor head
+        self.actor_mean = nn.Linear(hidden_dim, action_dim)
+        self.actor_log_std = nn.Linear(hidden_dim, action_dim)
         self.max_action = max_action
 
+        # Critic head
+        self.critic = nn.Linear(hidden_dim, 1)
+
     def forward(self, state):
-        x = self.net(state)
-        mean = self.mean(x)
-        log_std = self.log_std(x)
+        x = self.shared(state)
+
+        # Actor outputs
+        mean = self.actor_mean(x)
+        log_std = self.actor_log_std(x)
         log_std = torch.clamp(log_std, -20, 2)
-        return mean, log_std
+
+        # Critic output
+        value = self.critic(x)
+
+        return mean, log_std, value
 
     def sample(self, state):
-        mean, log_std = self.forward(state)
+        mean, log_std, value = self.forward(state)
         std = log_std.exp()
         normal = Normal(mean, std)
         x_t = normal.rsample()
@@ -109,165 +86,131 @@ class Actor(nn.Module):
         log_prob -= torch.log(1 - action.pow(2) + 1e-6)
         log_prob = log_prob.sum(1, keepdim=True)
 
-        return action * self.max_action, log_prob
+        return action * self.max_action, log_prob, value
 
 
-class Critic(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=256):
-        super(Critic, self).__init__()
-
-        self.q1 = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
-        )
-
-        self.q2 = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1),
-        )
-
-    def forward(self, state, action):
-        x = torch.cat([state, action], 1)
-        return self.q1(x), self.q2(x)
-
-
-class SAC:
-    def __init__(self, state_dim, action_dim, max_action, device):
-        self.actor = Actor(state_dim, action_dim, max_action=max_action).to(device)
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=3e-4)
-
-        self.critic = Critic(state_dim, action_dim).to(device)
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=3e-4)
-
-        self.critic_target = Critic(state_dim, action_dim).to(device)
-        self.critic_target.load_state_dict(self.critic.state_dict())
+class A2C:
+    def __init__(
+        self,
+        state_dim,
+        action_dim,
+        max_action,
+        device,
+        lr=3e-4,
+        gamma=0.99,
+        entropy_coef=0.01,
+    ):
+        self.actor_critic = ActorCritic(
+            state_dim, action_dim, max_action=max_action
+        ).to(device)
+        self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=lr)
 
         self.max_action = max_action
         self.device = device
-
-        # Automatically tune temperature
-        self.target_entropy = -torch.prod(torch.Tensor([action_dim]).to(device)).item()
-        self.log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=3e-4)
+        self.gamma = gamma
+        self.entropy_coef = entropy_coef
 
     def select_action(self, state, evaluate=False):
         state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
         if evaluate:
-            mean, _ = self.actor(state)
+            mean, _, _ = self.actor_critic(state)
             action = torch.tanh(mean) * self.max_action
             return action.cpu().data.numpy().flatten()
-        action, _ = self.actor.sample(state)
+        action, _, _ = self.actor_critic.sample(state)
         return action.cpu().data.numpy().flatten()
 
-    def train(self, replay_buffer, batch_size=256, gamma=0.99, tau=0.005):
-        state, action, reward, next_state, done = replay_buffer.sample(batch_size)
+    def compute_returns_and_advantages(self, rewards, values, dones, next_value):
+        returns = []
+        advantages = []
+        R = next_value
 
-        state = state.to(self.device)
-        action = action.to(self.device)
-        reward = reward.to(self.device)
-        next_state = next_state.to(self.device)
-        done = done.to(self.device)
+        for r, v, d in zip(reversed(rewards), reversed(values), reversed(dones)):
+            R = r + self.gamma * R * (1 - d)
+            advantage = R - v
+            returns.insert(0, R)
+            advantages.insert(0, advantage)
 
-        alpha = self.log_alpha.exp()
+        # Convert to float32 tensors explicitly (mps does not support float64)
+        returns = torch.tensor(returns, dtype=torch.float32).to(self.device)
+        advantages = torch.tensor(advantages, dtype=torch.float32).to(self.device)
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        # Update critic
+        return returns, advantages
+
+    def update(self, states, actions, rewards, dones, next_state):
+        # Convert lists to numpy arrays before creating tensors for better performance
+        states = np.array(states)
+        actions = np.array(actions)
+        rewards = np.array(rewards)
+        dones = np.array(dones)
+
+        # Convert to tensors and move to device
+        states = torch.FloatTensor(states).to(self.device)
+        actions = torch.FloatTensor(actions).to(self.device)
+
+        # Get current values and log probs
+        _, log_probs, values = self.actor_critic.sample(states)
+
+        # Get next value
         with torch.no_grad():
-            next_action, next_log_pi = self.actor.sample(next_state)
-            target_q1, target_q2 = self.critic_target(next_state, next_action)
-            target_q = torch.min(target_q1, target_q2) - alpha * next_log_pi
-            target_q = reward + (1 - done) * gamma * target_q
+            next_state = torch.FloatTensor(next_state).to(self.device).unsqueeze(0)
+            _, _, next_value = self.actor_critic(next_state)
+            next_value = next_value.squeeze()
 
-        current_q1, current_q2 = self.critic(state, action)
-        critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(
-            current_q2, target_q
+        # Compute returns and advantages
+        returns, advantages = self.compute_returns_and_advantages(
+            rewards,
+            values.squeeze().detach().cpu().numpy(),
+            dones,
+            next_value.detach().cpu().numpy(),
         )
 
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward()
-        self.critic_optimizer.step()
+        # Compute losses
+        policy_loss = -(log_probs * advantages.unsqueeze(1)).mean()
+        value_loss = F.mse_loss(values.squeeze(), returns)
+        entropy_loss = -self.entropy_coef * log_probs.mean()
 
-        # Update actor
-        action_new, log_pi = self.actor.sample(state)
-        q1_new, q2_new = self.critic(state, action_new)
-        q_new = torch.min(q1_new, q2_new)
+        total_loss = policy_loss + value_loss + entropy_loss
 
-        actor_loss = (alpha * log_pi - q_new).mean()
+        # Update network
+        self.optimizer.zero_grad()
+        total_loss.backward()
+        self.optimizer.step()
 
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        self.actor_optimizer.step()
-
-        # Update temperature
-        alpha_loss = -(self.log_alpha * (log_pi + self.target_entropy).detach()).mean()
-
-        self.alpha_optimizer.zero_grad()
-        alpha_loss.backward()
-        self.alpha_optimizer.step()
-
-        # Update target networks
-        for param, target_param in zip(
-            self.critic.parameters(), self.critic_target.parameters()
-        ):
-            target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+        return {
+            "policy_loss": policy_loss.item(),
+            "value_loss": value_loss.item(),
+            "entropy_loss": entropy_loss.item(),
+            "total_loss": total_loss.item(),
+        }
 
     def save(self, directory, name):
         # Save regular checkpoint
         if name.startswith("step_"):
-            torch.save(self.actor.state_dict(), f"{directory}/sac_actor_{name}.pth")
-            torch.save(self.critic.state_dict(), f"{directory}/sac_critic_{name}.pth")
+            torch.save(
+                self.actor_critic.state_dict(),
+                f"{directory}/a2c_actor_critic_{name}.pth",
+            )
         # Save best model
         elif name.startswith("best_"):
             step = name.split("_")[1]
             torch.save(
-                self.actor.state_dict(), f"{directory}/sac_actor_best_step_{step}.pth"
-            )
-            torch.save(
-                self.critic.state_dict(), f"{directory}/sac_critic_best_step_{step}.pth"
+                self.actor_critic.state_dict(),
+                f"{directory}/a2c_actor_critic_best_step_{step}.pth",
             )
 
     def load(self, directory, name):
-        self.actor.load_state_dict(torch.load(f"{directory}/sac_actor_{name}.pth"))
-        self.critic.load_state_dict(torch.load(f"{directory}/sac_critic_{name}.pth"))
-
-
-def plot_training_curves(rewards, episode_lengths, save_dir):
-    """Create plots of training metrics."""
-    episodes = np.arange(len(episode_lengths))
-    # Create figure with two subplots
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
-
-    # Plot reward vs total steps
-    ax1.plot(episodes, rewards, "b-", linewidth=2)
-    ax1.set_xlabel("Episode")
-    ax1.set_ylabel("Episode Reward")
-    ax1.set_title("Reward Over Time")
-    ax1.grid(True)
-
-    # Plot episode length vs episodes
-    ax2.plot(episodes, episode_lengths, "r-", linewidth=2)
-    ax2.set_xlabel("Episode")
-    ax2.set_ylabel("Episode Length")
-    ax2.set_title("Episode Length Over Time")
-    ax2.grid(True)
-
-    # Adjust layout and save
-    plt.tight_layout()
-    plt.savefig(f"{save_dir}/training_curves.png", dpi=300, bbox_inches="tight")
-    plt.close()
+        self.actor_critic.load_state_dict(
+            torch.load(f"{directory}/a2c_actor_critic_{name}.pth")
+        )
 
 
 def evaluate_policy(agent, env, num_episodes=100, save_dir=None):
     """
-    Evaluate a trained SAC policy over multiple episodes and calculate reward statistics.
+    Evaluate a trained A2C policy over multiple episodes and calculate reward statistics.
 
     Args:
-        agent: The trained SAC agent
+        agent: The trained A2C agent
         env: The environment to evaluate in
         num_episodes: Number of episodes to run
         save_dir: Directory to save evaluation results
@@ -377,12 +320,40 @@ def evaluate_policy(agent, env, num_episodes=100, save_dir=None):
     }
 
 
+def plot_training_curves(rewards, episode_lengths, save_dir):
+    """Create plots of training metrics."""
+    episodes = np.arange(len(episode_lengths))
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
+
+    # Plot reward vs total steps
+    ax1.plot(episodes, rewards, "b-", linewidth=2)
+    ax1.set_xlabel("Episode")
+    ax1.set_ylabel("Episode Reward")
+    ax1.set_title("Training Progress")
+    ax1.grid(True)
+
+    # Plot episode length vs episodes
+    ax2.plot(episodes, episode_lengths, "r-", linewidth=2)
+    ax2.set_xlabel("Episode")
+    ax2.set_ylabel("Episode Length")
+    ax2.set_title("Episode Length Over Time")
+    ax2.grid(True)
+
+    # Adjust layout and save
+    plt.tight_layout()
+    plt.savefig(f"{save_dir}/training_curves.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", default="BipedalWalker-v3", type=str)
     parser.add_argument("--seed", default=0, type=int)
     parser.add_argument("--max_timesteps", default=1_000_000, type=int)
-    parser.add_argument("--batch_size", default=256, type=int)
+    parser.add_argument(
+        "--update_freq", default=2048, type=int
+    )  # Number of steps between updates
     parser.add_argument("--save_freq", default=50000, type=int)
     parser.add_argument(
         "--eval_freq",
@@ -417,7 +388,7 @@ def main():
     print(f"Using device: {device}")
 
     # Initialize agent
-    agent = SAC(state_dim, action_dim, max_action, device)
+    agent = A2C(state_dim, action_dim, max_action, device)
 
     if args.evaluate:
         if args.model_path is None:
@@ -438,22 +409,28 @@ def main():
         return
 
     # Create save directory
-    save_dir = f"results/sac_{args.env}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    save_dir = f"results/a2c_{args.env}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     os.makedirs(save_dir, exist_ok=True)
 
     # Set up video recording if enabled
     if args.save_video:
+        # Create evaluation environment for video recording
+        eval_env = EvalWrapper(env, agent)
         env = RecordVideo(
-            env, f"{save_dir}/videos", episode_trigger=lambda x: x % 50 == 0
+            eval_env, f"{save_dir}/videos", episode_trigger=lambda x: x % 50 == 0
         )
-
-    replay_buffer = ReplayBuffer(1_000_000)
 
     # Training loop
     state, _ = env.reset()
     episode_reward = 0
-    epsiode_steps_count = 0
+    episode_timesteps = 0
     episode_num = 0
+
+    # Storage for update
+    states = []
+    actions = []
+    rewards = []
+    dones = []
 
     # Lists to store metrics for plotting
     episode_rewards = []
@@ -468,7 +445,7 @@ def main():
     episode_start = time.time()
 
     for t in range(args.max_timesteps):
-        epsiode_steps_count += 1
+        episode_timesteps += 1
 
         # Select action
         action = agent.select_action(state)
@@ -477,15 +454,35 @@ def main():
         next_state, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
 
-        # Store data in replay buffer
-        replay_buffer.push(state, action, reward, next_state, float(done))
+        # Store data
+        states.append(state)
+        actions.append(action)
+        rewards.append(reward)
+        dones.append(float(done))
 
         state = next_state
         episode_reward += reward
 
-        # Train agent
-        if len(replay_buffer) > args.batch_size:
-            agent.train(replay_buffer, args.batch_size)
+        # Update agent
+        if len(states) >= args.update_freq or done:
+            if done:
+                next_value = 0
+            else:
+                next_state_tensor = (
+                    torch.FloatTensor(next_state).to(device).unsqueeze(0)
+                )
+                with torch.no_grad():
+                    _, _, next_value = agent.actor_critic(next_state_tensor)
+                    next_value = next_value.squeeze().cpu().numpy()
+
+            # Update agent
+            update_info = agent.update(states, actions, rewards, dones, next_state)
+
+            # Clear storage
+            states.clear()
+            actions.clear()
+            rewards.clear()
+            dones.clear()
 
         if done:
             # Calculate episode time
@@ -494,19 +491,19 @@ def main():
             print(
                 f"Total steps: {t+1:7d} | "
                 f"Episode num: {episode_num+1:4d} | "
-                f"Episode steps: {epsiode_steps_count:4d} | "
+                f"Episode steps: {episode_timesteps:4d} | "
                 f"Reward: {episode_reward:8.3f} | "
                 f"Time: {episode_time:6.2f}s"
             )
 
             # Store metrics
             episode_rewards.append(episode_reward)
-            episode_lengths.append(epsiode_steps_count)
+            episode_lengths.append(episode_timesteps)
 
             # Reset environment
             state, _ = env.reset()
             episode_reward = 0
-            epsiode_steps_count = 0
+            episode_timesteps = 0
             episode_num += 1
             episode_start = time.time()
 
@@ -545,7 +542,7 @@ def main():
     total_training_time = time.time() - total_training_start
     print(f"\nTotal training time: {total_training_time:.2f} seconds")
 
-    # Plot training curves with total steps
+    # Plot training curves
     plot_training_curves(episode_rewards, episode_lengths, save_dir)
 
     env.close()
