@@ -1,7 +1,5 @@
-from typing import Optional, Union
 import numpy as np
 import torch
-from gymnasium.wrappers import RecordVideo
 import matplotlib.pyplot as plt
 import seaborn as sns
 

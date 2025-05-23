@@ -1,20 +1,23 @@
-import os
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.distributions import Normal
-import gymnasium as gym
-from gymnasium.wrappers import RecordVideo
 import argparse
-from datetime import datetime
 import time
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
 import seaborn as sns
 
-from common.utils import EvalWrapper, evaluate_policy, plot_training_curves, get_device
+from common.utils import (
+    EvalWrapper,
+    plot_training_curves,
+    get_device,
+    run_evaluation,
+    setup_environment,
+    get_env_info,
+    setup_save_directory,
+    setup_video_recording,
+    print_episode_info,
+)
 from common.base_agent import BaseAgent
 from common.actor import Actor
 from common.critic import ValueCritic
@@ -27,16 +30,25 @@ sns.set_style("whitegrid")
 
 class A2C(BaseAgent):
     """Advantage Actor-Critic algorithm."""
-    
-    def __init__(self, state_dim, action_dim, max_action, device, lr=3e-4, gamma=0.99, entropy_coef=0.01):
+
+    def __init__(
+        self,
+        state_dim,
+        action_dim,
+        max_action,
+        device,
+        lr=3e-4,
+        gamma=0.99,
+        entropy_coef=0.01,
+    ):
         super().__init__(state_dim, action_dim, max_action, device)
-        
+
         self.actor = Actor(state_dim, action_dim, max_action=max_action).to(device)
         self.critic = ValueCritic(state_dim).to(device)
-        self.optimizer = optim.Adam([
-            {'params': self.actor.parameters()},
-            {'params': self.critic.parameters()}
-        ], lr=lr)
+        self.optimizer = optim.Adam(
+            [{"params": self.actor.parameters()}, {"params": self.critic.parameters()}],
+            lr=lr,
+        )
 
         self.gamma = gamma
         self.entropy_coef = entropy_coef
@@ -125,69 +137,33 @@ class A2C(BaseAgent):
         self.critic.load_state_dict(torch.load(f"{directory}/a2c_critic_{name}.pth"))
 
 
-def main():
+def parse_args():
+    """Parse command line arguments."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", default="BipedalWalker-v3", type=str)
     parser.add_argument("--seed", default=0, type=int)
     parser.add_argument("--max_timesteps", default=1_000_000, type=int)
-    parser.add_argument("--update_freq", default=2048, type=int)  # Number of steps between updates
+    parser.add_argument(
+        "--update_freq", default=2048, type=int
+    )  # Number of steps between updates
     parser.add_argument("--save_freq", default=50000, type=int)
     parser.add_argument("--save_video", action="store_true")
     parser.add_argument("--evaluate", action="store_true", help="Run evaluation mode")
     parser.add_argument("--model_path", type=str, help="Path to the model to evaluate")
-    parser.add_argument("--eval_episodes", type=int, default=100, help="Number of episodes for evaluation")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--eval_episodes",
+        type=int,
+        default=100,
+        help="Number of episodes for evaluation",
+    )
+    return parser.parse_args()
 
-    # Set up environment
-    env = gym.make(args.env, render_mode="rgb_array")
 
-    # Set seeds
-    env.reset(seed=args.seed)
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-
-    state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
-    max_action = float(env.action_space.high[0])
-
-    device = get_device()
-    print(f"Using device: {device}")
-
-    # Initialize agent
-    agent = A2C(state_dim, action_dim, max_action, device)
-
-    if args.evaluate:
-        if args.model_path is None:
-            raise ValueError("Model path must be provided for evaluation mode")
-        
-        # Get model directory and step number
-        model_dir = os.path.dirname(args.model_path)
-        step_name = os.path.basename(args.model_path).replace(".pth", "").split('_')[-1]
-        model_identifier = f"step_{step_name}"
-        
-        # Load the trained model
-        agent.load(directory=model_dir, name=model_identifier)
-        print(f"Loaded model from {args.model_path}")
-        
-        # Run evaluation
-        evaluate_policy(agent, env, num_episodes=args.eval_episodes, save_dir=model_dir)
-        env.close()
-        return
-
-    # Create save directory
-    save_dir = f"results/a2c_{args.env}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    os.makedirs(save_dir, exist_ok=True)
-
-    # Set up video recording if enabled
-    if args.save_video:
-        # Create evaluation environment for video recording
-        # eval_env = EvalWrapper(env, agent)
-        env = RecordVideo(env, f"{save_dir}/videos", episode_trigger=lambda x: x % 50 == 0)
-
-    # Training loop
+def train_a2c(agent, env, args, save_dir):
+    """Main training loop for A2C."""
     state, _ = env.reset()
     episode_reward = 0
-    episode_timesteps = 0
+    episode_steps = 0
     episode_num = 0
 
     # Storage for update
@@ -200,17 +176,14 @@ def main():
     episode_rewards = []
     episode_lengths = []
 
-    # Start timing the total training
     total_training_start = time.time()
     episode_start = time.time()
 
     for t in range(args.max_timesteps):
-        episode_timesteps += 1
+        episode_steps += 1
 
-        # Select action
+        # Select and perform action
         action = agent.select_action(state)
-
-        # Perform action
         next_state, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
 
@@ -228,7 +201,9 @@ def main():
             if done:
                 next_value = 0
             else:
-                next_state_tensor = torch.FloatTensor(next_state).to(device).unsqueeze(0)
+                next_state_tensor = (
+                    torch.FloatTensor(next_state).to(agent.device).unsqueeze(0)
+                )
                 with torch.no_grad():
                     next_value = agent.critic(next_state_tensor)
                     next_value = next_value.squeeze().cpu().numpy()
@@ -246,22 +221,19 @@ def main():
             # Calculate episode time
             episode_time = time.time() - episode_start
 
-            print(
-                f"Total steps: {t+1:7d} | "
-                f"Episode num: {episode_num+1:4d} | "
-                f"Episode steps: {episode_timesteps:4d} | "
-                f"Reward: {episode_reward:8.3f} | "
-                f"Time: {episode_time:6.2f}s"
+            # Print episode info
+            print_episode_info(
+                t + 1, episode_num, episode_steps, episode_reward, episode_time
             )
 
-            # Store metrics
+            # Track metrics
             episode_rewards.append(episode_reward)
-            episode_lengths.append(episode_timesteps)
+            episode_lengths.append(episode_steps)
 
             # Reset environment
             state, _ = env.reset()
             episode_reward = 0
-            episode_timesteps = 0
+            episode_steps = 0
             episode_num += 1
             episode_start = time.time()
 
@@ -276,6 +248,30 @@ def main():
     # Plot training curves
     plot_training_curves(episode_rewards, episode_lengths, save_dir)
 
+
+def main():
+    args = parse_args()
+
+    # Set up environment
+    env = setup_environment(args.env, args.seed)
+    state_dim, action_dim, max_action = get_env_info(env)
+
+    # Initialize agent
+    device = get_device()
+    print(f"Using device: {device}")
+    agent = A2C(state_dim, action_dim, max_action, device)
+
+    if args.evaluate:
+        run_evaluation(agent, env, args)
+        return
+
+    # Set up save directory and video recording
+    save_dir = setup_save_directory("a2c", args.env)
+    if args.save_video:
+        env = setup_video_recording(env, save_dir)
+
+    # Run training
+    train_a2c(agent, env, args, save_dir)
     env.close()
 
 
