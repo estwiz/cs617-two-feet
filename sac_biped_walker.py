@@ -11,11 +11,10 @@ import argparse
 from datetime import datetime
 import time
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
 import seaborn as sns
 
-from utils import get_device
-from common.base_agent import BaseAgent, plot_training_curves, evaluate_policy, EvalWrapper
+from common.utils import EvalWrapper, evaluate_policy, plot_training_curves, get_device
+from common.base_agent import BaseAgent
 from common.replay_buffer import ReplayBuffer
 from common.actor import Actor
 from common.critic import Critic
