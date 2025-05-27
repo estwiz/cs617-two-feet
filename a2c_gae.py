@@ -199,7 +199,7 @@ def main():
     # Get environment info using utility function
     state_dim, action_dim, max_action = get_env_info(env)
     device = get_device()
-    
+
     agent = A2C(state_dim, action_dim, max_action, device, learning_rate=args.learning_rate)
 
     state, _ = env.reset()
@@ -241,11 +241,11 @@ def main():
             # Store episode metrics
             episode_rewards.append(episode_reward)
             episode_lengths.append(episode_timesteps)
-            
+
             # Print episode info using utility function
             episode_time = time.time() - episode_start_time
             print_episode_info(t, episode_num, episode_timesteps, episode_reward, episode_time)
-            
+
             state, _ = env.reset()
             episode_reward = 0
             episode_timesteps = 0
@@ -253,17 +253,9 @@ def main():
             episode_start_time = time.time()
 
         if (t + 1) % args.save_freq == 0:
-            agent.save(save_dir, f"step_{t+1}")
+            agent.save(save_dir, f"step_{t + 1}")
 
-        # Reduce evaluation frequency and number of episodes
-        if t % args.eval_freq == 0:
-            evaluate_policy(agent, env, num_episodes=5, save_dir=save_dir)  # Reduced from 10 to 5 episodes
-
-    # Plot training curves at the end
     plot_training_curves(episode_rewards, episode_lengths, save_dir)
-
-    # Final evaluation with more episodes
-    evaluate_policy(agent, env, num_episodes=100, save_dir=save_dir)
 
     env.close()
 
