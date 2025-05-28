@@ -12,6 +12,8 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 from typing import List
 
+from common.utils import run_evaluation
+
 
 class Policy(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim = 128,log_std_init=0.0):
@@ -217,6 +219,14 @@ def main():
     parser.add_argument("--gae_lambda", default=0.9, type=float)
     parser.add_argument("--hidden_dim", type=int, default=128)
     parser.add_argument("--log_std_init", type=float, default=0.0)
+    parser.add_argument("--evaluate", action="store_true", help="Run evaluation mode")
+    parser.add_argument("--model_path", type=str, help="Path to the model to evaluate")
+    parser.add_argument(
+        "--eval_episodes",
+        type=int,
+        default=100,
+        help="Number of episodes for evaluation",
+    )
     args = parser.parse_args()
 
     save_dir = f"results/a2c_gae_{args.env}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -236,6 +246,9 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     agent = A2C(state_dim, action_dim, max_action, device, log_std_init = args.log_std_init,hidden_dim=args.hidden_dim,learning_rate=args.learning_rate)
+    if args.evaluate:
+        run_evaluation(agent, env, args)
+        return
 
     state, _ = env.reset()
     episode_reward = 0
