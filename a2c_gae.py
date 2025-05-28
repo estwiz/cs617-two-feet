@@ -9,42 +9,32 @@ import gymnasium as gym
 from gymnasium.wrappers import RecordVideo
 import argparse
 from datetime import datetime
-from common import Actor, Critic
-from common.utils import (
-    get_device,
-    setup_environment,
-    get_env_info,
-    setup_save_directory,
-    setup_video_recording,
-    print_episode_info,
-    evaluate_policy,
-    plot_training_curves
-)
-import time
+import matplotlib.pyplot as plt
+from typing import List
 
 
 class Policy(nn.Module):
-    def __init__(self, state_dim, action_dim, log_std_init=0.0):
+    def __init__(self, state_dim, action_dim, hidden_dim = 128,log_std_init=0.0):
         super().__init__()
         self.activation = torch.tanh
 
         self.affine_layers = nn.ModuleList([
-            nn.Linear(state_dim, 128),
-            nn.Linear(128, 128)
+            nn.Linear(state_dim, hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim)
         ])
 
-        self.action_mean = nn.Linear(128, action_dim)
+        self.action_mean = nn.Linear(hidden_dim, action_dim)
         self.action_mean.weight.data.mul_(0.1)
         self.action_mean.bias.data.mul_(0.0)
 
-        self.action_log_std = nn.Parameter(torch.ones(action_dim) * log_std_init)
+        self.action_log_std = nn.Parameter(torch.ones(1, action_dim) * log_std_init)
 
     def forward(self, state):
         x = state
         for layer in self.affine_layers:
             x = self.activation(layer(x))
         mean = self.action_mean(x)
-        std = torch.exp(self.action_log_std).expand_as(mean)
+        std = torch.exp(self.action_log_std.expand_as(mean))
         return mean, std
 
     def sample(self, state):
@@ -57,16 +47,16 @@ class Policy(nn.Module):
 
 
 class Value(nn.Module):
-    def __init__(self, state_dim):
+    def __init__(self, state_dim,hidden_dim = 128):
         super().__init__()
         self.activation = torch.tanh
 
         self.affine_layers = nn.ModuleList([
-            nn.Linear(state_dim, 128),
-            nn.Linear(128, 128)
+            nn.Linear(state_dim, hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim)
         ])
 
-        self.value_head = nn.Linear(128, 1)
+        self.value_head = nn.Linear(hidden_dim, 1)
         self.value_head.weight.data.mul_(0.1)
         self.value_head.bias.data.mul_(0.0)
 
@@ -78,11 +68,11 @@ class Value(nn.Module):
 
 
 class A2C:
-    def __init__(self, state_dim, action_dim, max_action, device, learning_rate=3e-4):
-        self.actor = Policy(state_dim, action_dim).to(device)
+    def __init__(self, state_dim, action_dim, max_action, device, hidden_dim = 128, log_std_init = 0.0 ,learning_rate=3e-4):
+        self.actor = Policy(state_dim, action_dim, hidden_dim=hidden_dim,log_std_init=log_std_init).to(device)
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=learning_rate)
 
-        self.critic = Value(state_dim).to(device)
+        self.critic = Value(state_dim,hidden_dim=hidden_dim).to(device)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=learning_rate)
 
         self.max_action = max_action
@@ -113,9 +103,9 @@ class A2C:
         state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
         if evaluate:
             mean, _ = self.actor(state)
-            return torch.tanh(mean).detach().cpu().numpy().flatten()
+            return torch.tanh(mean) * self.max_action
         action, _ = self.actor.sample(state)
-        return action.detach().cpu().numpy().flatten()
+        return action.cpu().data.numpy().flatten()
 
     def train(self, states, actions, rewards, next_states, dones, gamma=0.99, gae_lambda=0.9, entropy_coef=0.01):
         states = torch.FloatTensor(states).to(self.device)
@@ -176,6 +166,43 @@ class A2C:
         self.critic.load_state_dict(torch.load(f'{directory}/a2c_critic_{name}.pth'))
 
 
+def plot_training_curves(
+    rewards: List[float], episode_lengths: List[int], save_dir: str
+) -> None:
+    """Create plots of training metrics."""
+    episodes = np.arange(len(episode_lengths))
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
+
+    # Plot reward vs total steps
+    ax1.plot(episodes, rewards, "b-", linewidth=2, label="Episode Reward")
+    
+    # Add mean reward line only if we have enough episodes
+    if len(rewards) >= 100:
+        mean_rewards = np.convolve(rewards, np.ones(100)/100, mode='valid')
+        ax1.plot(episodes[99:], mean_rewards, "r--", linewidth=2, label="Mean Reward (100 episodes)")
+    
+    ax1.set_xlabel("Episode")
+    ax1.set_ylabel("Episode Reward")
+    ax1.set_title("Training Progress")
+    ax1.grid(True)
+    ax1.legend()
+
+    # Plot episode length vs episodes
+    ax2.plot(episodes, episode_lengths, "r-", linewidth=2)
+    ax2.set_xlabel("Episode")
+    ax2.set_ylabel("Episode Length")
+    ax2.set_title("Episode Length Over Time")
+    ax2.grid(True)
+
+    # Adjust layout and save
+    plt.tight_layout()
+    plt.savefig(
+        os.path.join(save_dir, "training_curves.png"), dpi=300, bbox_inches="tight"
+    )
+    plt.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", default="BipedalWalker-v3", type=str)
@@ -188,31 +215,38 @@ def main():
     parser.add_argument("--entropy_coef", default=0.01, type=float)
     parser.add_argument("--learning_rate", default=3e-4, type=float)
     parser.add_argument("--gae_lambda", default=0.9, type=float)
+    parser.add_argument("--hidden_dim", type=int, default=128)
+    parser.add_argument("--log_std_init", type=float, default=0.0)
     args = parser.parse_args()
 
-    # Use utility functions for setup
-    save_dir = setup_save_directory("a2c_gae", args.env)
-    env = setup_environment(args.env, args.seed, "rgb_array")
+    save_dir = f"results/a2c_gae_{args.env}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    os.makedirs(save_dir, exist_ok=True)
+
+    env = gym.make(args.env, render_mode="rgb_array")
     if args.save_video:
-        env = setup_video_recording(env, save_dir)
+        env = RecordVideo(env, f"{save_dir}/videos", episode_trigger=lambda x: x % 50 == 0)
 
-    # Get environment info using utility function
-    state_dim, action_dim, max_action = get_env_info(env)
-    device = get_device()
+    env.reset(seed=args.seed)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
-    agent = A2C(state_dim, action_dim, max_action, device, learning_rate=args.learning_rate)
+    state_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+    max_action = float(env.action_space.high[0])
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    agent = A2C(state_dim, action_dim, max_action, device, log_std_init = args.log_std_init,hidden_dim=args.hidden_dim,learning_rate=args.learning_rate)
 
     state, _ = env.reset()
     episode_reward = 0
     episode_timesteps = 0
     episode_num = 0
-    episode_start_time = time.time()
-
-    # Lists to store training metrics
-    episode_rewards = []
-    episode_lengths = []
 
     states, actions, rewards, next_states, dones = [], [], [], [], []
+    
+    # Initialize lists to track training metrics
+    all_rewards = []
+    all_episode_lengths = []
 
     for t in range(args.max_timesteps):
         episode_timesteps += 1
@@ -237,25 +271,24 @@ def main():
             )
             states, actions, rewards, next_states, dones = [], [], [], [], []
 
+            if t % 100 == 0:
+                print(f"Step {t}, Actor Loss: {train_info['actor_loss']:.3f}, Critic Loss: {train_info['critic_loss']:.3f}, Entropy: {train_info['entropy']:.3f}")
+
         if done:
+            print(f"Total T: {t+1} Episode Num: {episode_num+1} Episode T: {episode_timesteps} Reward: {episode_reward:.3f}")
             # Store episode metrics
-            episode_rewards.append(episode_reward)
-            episode_lengths.append(episode_timesteps)
-
-            # Print episode info using utility function
-            episode_time = time.time() - episode_start_time
-            print_episode_info(t, episode_num, episode_timesteps, episode_reward, episode_time)
-
+            all_rewards.append(episode_reward)
+            all_episode_lengths.append(episode_timesteps)
             state, _ = env.reset()
             episode_reward = 0
             episode_timesteps = 0
             episode_num += 1
-            episode_start_time = time.time()
 
         if (t + 1) % args.save_freq == 0:
-            agent.save(save_dir, f"step_{t + 1}")
-
-    plot_training_curves(episode_rewards, episode_lengths, save_dir)
+            agent.save(save_dir, f"step_{t+1}")
+    
+    # Plot training curves at the end of training
+    plot_training_curves(all_rewards, all_episode_lengths, save_dir)
 
     env.close()
 
