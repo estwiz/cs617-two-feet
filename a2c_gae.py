@@ -105,7 +105,8 @@ class A2C:
         state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
         if evaluate:
             mean, _ = self.actor(state)
-            return torch.tanh(mean) * self.max_action
+            action = torch.tanh(mean) * self.max_action
+            return action.cpu().data.numpy().flatten()
         action, _ = self.actor.sample(state)
         return action.cpu().data.numpy().flatten()
 
