@@ -138,9 +138,9 @@ class A2C:
 
         _, log_prob = self.actor.sample(states)
         actor_loss = -(log_prob * advantages.unsqueeze(1)).mean()
-
-        _, std = self.actor(states)
-        entropy = 0.5 * (torch.log(2 * np.pi * std.pow(2)) + 1).sum(1).mean()
+        mean, std = self.actor(states)
+        dist = Normal(mean, std)
+        entropy = dist.entropy().sum(1).mean()
         actor_loss -= entropy_coef * entropy
 
         critic_loss = F.mse_loss(values, returns)
