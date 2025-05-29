@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -8,14 +7,23 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from common.utils import (
-    EvalWrapper, plot_training_curves, get_device,
-    setup_environment, get_env_info, setup_save_directory, setup_video_recording,
-    print_episode_info, run_evaluation
+    EvalWrapper,
+    get_device,
+    plot_metrics,
+    setup_environment,
+    get_env_info,
+    setup_save_directory,
+    setup_video_recording,
+    print_episode_info,
+    run_evaluation,
 )
 from common.base_agent import BaseAgent
 from common.replay_buffer import ReplayBuffer
 from common.actor import Actor
 from common.critic import Critic
+import gymnasium as gym
+
+from common.utils import save_expt_metadata
 
 # Set plot style
 plt.style.use("seaborn-v0_8-whitegrid")
@@ -25,15 +33,17 @@ sns.set_style("whitegrid")
 
 class SAC(BaseAgent):
     """Soft Actor-Critic algorithm."""
-    
-    def __init__(self, state_dim, action_dim, max_action, device):
+
+    def __init__(
+        self, state_dim: int, action_dim: int, max_action: float, device: torch.device, lr: float = 3e-4
+    ):
         super().__init__(state_dim, action_dim, max_action, device)
-        
+
         self.actor = Actor(state_dim, action_dim, max_action=max_action).to(device)
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=3e-4)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr)
 
         self.critic = Critic(state_dim, action_dim).to(device)
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=3e-4)
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr)
 
         self.critic_target = Critic(state_dim, action_dim).to(device)
         self.critic_target.load_state_dict(self.critic.state_dict())
@@ -41,7 +51,7 @@ class SAC(BaseAgent):
         # Automatically tune temperature
         self.target_entropy = -torch.prod(torch.Tensor([action_dim]).to(device)).item()
         self.log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=3e-4)
+        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=lr)
 
     def select_action(self, state, evaluate=False):
         state = torch.FloatTensor(state).to(self.device).unsqueeze(0)
@@ -53,33 +63,35 @@ class SAC(BaseAgent):
         return action.cpu().data.numpy().flatten()
 
     def train(self, replay_buffer, batch_size=256, gamma=0.99, tau=0.005):
-        state, action, reward, next_state, done = replay_buffer.sample(batch_size)
+        states, actions, rewards, next_states, dones = replay_buffer.sample(batch_size)
 
-        state = state.to(self.device)
-        action = action.to(self.device)
-        reward = reward.to(self.device)
-        next_state = next_state.to(self.device)
-        done = done.to(self.device)
+        states = states.to(self.device)
+        actions = actions.to(self.device)
+        rewards = rewards.to(self.device)
+        next_states = next_states.to(self.device)
+        dones = dones.to(self.device)
 
         alpha = self.log_alpha.exp()
 
         # Update critic
         with torch.no_grad():
-            next_action, next_log_pi = self.actor.sample(next_state)
-            target_q1, target_q2 = self.critic_target(next_state, next_action)
+            next_action, next_log_pi = self.actor.sample(next_states)
+            target_q1, target_q2 = self.critic_target(next_states, next_action)
             target_q = torch.min(target_q1, target_q2) - alpha * next_log_pi
-            target_q = reward + (1 - done) * gamma * target_q
+            target_q = rewards + (1 - dones) * gamma * target_q
 
-        current_q1, current_q2 = self.critic(state, action)
-        critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
+        current_q1, current_q2 = self.critic(states, actions)
+        critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(
+            current_q2, target_q
+        )
 
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
 
         # Update actor
-        action_new, log_pi = self.actor.sample(state)
-        q1_new, q2_new = self.critic(state, action_new)
+        action_new, log_pi = self.actor.sample(states)
+        q1_new, q2_new = self.critic(states, action_new)
         q_new = torch.min(q1_new, q2_new)
 
         actor_loss = (alpha * log_pi - q_new).mean()
@@ -96,8 +108,16 @@ class SAC(BaseAgent):
         self.alpha_optimizer.step()
 
         # Update target networks
-        for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
+        for param, target_param in zip(
+            self.critic.parameters(), self.critic_target.parameters()
+        ):
             target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+
+        return {
+            "actor_loss": actor_loss.item(),
+            "critic_loss": critic_loss.item(),
+            "alpha_loss": alpha_loss.item(),
+        }
 
     def save(self, directory, name):
         torch.save(self.actor.state_dict(), f"{directory}/sac_actor_{name}.pth")
@@ -112,26 +132,98 @@ def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", default="BipedalWalker-v3", type=str)
-    parser.add_argument("--seed", default=0, type=int)
-    parser.add_argument("--max_timesteps", default=1_000_000, type=int)
-    parser.add_argument("--batch_size", default=256, type=int)
-    parser.add_argument("--save_freq", default=50000, type=int)
+    parser.add_argument(
+        "--seed", default=0, type=int, help="Random seed for reproducibility"
+    )
+    parser.add_argument(
+        "--max_timesteps",
+        default=500_000,
+        type=int,
+        help="Maximum number of timesteps to train for",
+    )
+    parser.add_argument(
+        "--batch_size", default=256, type=int, help="Batch size for training"
+    )
+    parser.add_argument(
+        "--save_freq", default=50000, type=int, help="Frequency to save model weights"
+    )
     parser.add_argument("--save_video", action="store_true")
     parser.add_argument("--evaluate", action="store_true", help="Run evaluation mode")
     parser.add_argument("--model_path", type=str, help="Path to the model to evaluate")
-    parser.add_argument("--eval_episodes", type=int, default=100, help="Number of episodes for evaluation")
+    parser.add_argument(
+        "--eval_episodes",
+        type=int,
+        default=100,
+        help="Number of episodes for evaluation",
+    )
+    # Add new hyperparameters
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=3e-4,
+        help="Learning rate for all networks",
+    )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=0.99,
+        help="Discount factor",
+    )
+    parser.add_argument(
+        "--tau",
+        type=float,
+        default=0.005,
+        help="Target network update rate",
+    )
+    parser.add_argument(
+        "--train_freq",
+        type=int,
+        default=64,
+        help="How often to train the agent (in environment steps)",
+    )
+    parser.add_argument(
+        "--gradient_steps",
+        type=int,
+        default=32,
+        help="Number of gradient steps to perform per training iteration",
+    )
+    parser.add_argument(
+        "--learning_start",
+        type=int,
+        default=10_000,
+        help="Number of steps to wait before training",
+    )
+    parser.add_argument(
+        "--replay_buffer_size",
+        type=int,
+        default=300_000,
+        help="Size of the replay buffer",
+    )
     return parser.parse_args()
 
-def train_sac(agent, env, args, save_dir):
-    """Main training loop for SAC."""
-    replay_buffer = ReplayBuffer(1_000_000)
+
+def train_sac(
+    agent: SAC,
+    env: gym.Env,
+    args: argparse.Namespace,
+    save_dir: str,
+) -> None:
+    """Main training loop for SAC.
+
+    Args:
+        agent: The SAC agent to train
+        env: The environment to train in
+        args: Command line arguments
+        save_dir: Directory to save model checkpoints and metrics
+    """
+    replay_buffer = ReplayBuffer(args.replay_buffer_size)
     state, _ = env.reset()
     episode_reward = 0
     episode_steps = 0
     episode_num = 0
-    episode_rewards = []
-    episode_lengths = []
-    
+    episode_rewards, episode_lengths = [], []
+    actor_losses, critic_losses, alpha_losses = [], [], []
+
     total_training_start = time.time()
     episode_start = time.time()
 
@@ -144,25 +236,35 @@ def train_sac(agent, env, args, save_dir):
         done = terminated or truncated
 
         # Store data in replay buffer
-        replay_buffer.push(state, action, reward, next_state, float(done)) 
+        replay_buffer.push(state, action, reward, next_state, done)
 
         state = next_state
         episode_reward += reward
 
         # Train agent
-        if len(replay_buffer) > args.batch_size:
-            agent.train(replay_buffer, args.batch_size)
+        if len(replay_buffer) > args.learning_start and t % args.train_freq == 0:
+            # Perform multiple gradient steps
+            for _ in range(args.gradient_steps):
+                train_info = agent.train(
+                    replay_buffer=replay_buffer, 
+                    batch_size=args.batch_size,
+                    gamma=args.gamma,
+                    tau=args.tau
+                )
+                actor_losses.append(train_info["actor_loss"])
+                critic_losses.append(train_info["critic_loss"])
+                alpha_losses.append(train_info["alpha_loss"])
 
         if done:
-            # Calculate episode time
-            episode_time = time.time() - episode_start
-
             # Print episode info
-            print_episode_info(t+1, episode_num, episode_steps, episode_reward, episode_time)
+            episode_time = time.time() - episode_start
+            print_episode_info(
+                t + 1, episode_num, episode_steps, episode_reward, episode_time
+            )
 
             # Track metrics
-            episode_rewards.append(episode_reward)
-            episode_lengths.append(episode_steps)
+            episode_rewards.append(float(episode_reward))
+            episode_lengths.append(int(episode_steps))
 
             # Reset environment
             state, _ = env.reset()
@@ -179,8 +281,36 @@ def train_sac(agent, env, args, save_dir):
     total_training_time = time.time() - total_training_start
     print(f"\nTotal training time: {total_training_time:.2f} seconds")
 
-    # Plot training curves
-    plot_training_curves(episode_rewards, episode_lengths, save_dir)
+    # Save training curves and metadata
+    plot_metrics(
+        data=[episode_rewards, episode_lengths],
+        data_labels=["Episode Reward", "Episode Length"],
+        img_name="training_curves.png",
+        x_label="Episodes",
+        sma_window_size=10,
+        save_dir=save_dir,
+    )
+    plot_metrics(
+        data=[actor_losses, critic_losses, alpha_losses],
+        data_labels=["Actor Loss", "Critic Loss", "Temperature Loss"],
+        img_name="convergence_metrics.png",
+        x_label="Steps",
+        sma_window_size=10_000,
+        save_dir=save_dir,
+    )
+    save_expt_metadata(
+        save_dir=save_dir,
+        hyperparameters=vars(args),
+        episode_rewards=episode_rewards,
+        episode_lengths=episode_lengths,
+        total_training_time=total_training_time,
+        convergence_metrics={
+            "actor_losses": actor_losses,
+            "critic_losses": critic_losses,
+            "alpha_losses": alpha_losses,
+        },
+    )
+
 
 def main():
     args = parse_args()
@@ -192,7 +322,7 @@ def main():
     # Initialize agent
     device = get_device()
     print(f"Using device: {device}")
-    agent = SAC(state_dim, action_dim, max_action, device)
+    agent = SAC(state_dim, action_dim, max_action, device, lr=args.lr)
 
     if args.evaluate:
         run_evaluation(agent, env, args)
@@ -203,9 +333,15 @@ def main():
     if args.save_video:
         env = setup_video_recording(env, save_dir)
 
-    # Run training
-    train_sac(agent, env, args, save_dir)
+    # Run training with custom hyperparameters
+    train_sac(
+        agent=agent,
+        env=env,
+        args=args,
+        save_dir=save_dir
+    )
     env.close()
+
 
 if __name__ == "__main__":
     main()
