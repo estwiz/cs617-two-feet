@@ -1,4 +1,5 @@
 import argparse
+import json
 import gymnasium as gym
 import matplotlib.pyplot as plt
 import numpy as np
@@ -17,47 +18,61 @@ def get_device() -> torch.device:
     """
     if torch.cuda.is_available():
         return torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        return torch.device("mps")
     else:
         return torch.device("cpu")
 
 
-def plot_training_curves(
-    rewards: List[float], episode_lengths: List[int], save_dir: str
+def plot_metrics(
+    data: List[List[float]],
+    data_labels: List[str],
+    x_label: str,
+    save_dir: str,
+    img_name: str,
+    sma_window_size: int
 ) -> None:
-    """Create plots of training metrics."""
-    episodes = np.arange(len(episode_lengths))
-    # Create figure with two subplots
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
+    """Create plots of metrics with moving averages"""
+    n_metrics = len(data)
+    fig, axes = plt.subplots(n_metrics, 1, figsize=(12, 4 * n_metrics))
 
-    # Plot reward vs total steps
-    ax1.plot(episodes, rewards, "b-", linewidth=2)
-    ax1.set_xlabel("Episode")
-    ax1.set_ylabel("Episode Reward")
-    ax1.set_title("Training Progress")
-    ax1.grid(True)
+    # If only one metric, wrap axes in a list for consistent indexing
+    if n_metrics == 1:
+        axes = [axes]
 
-    # Plot episode length vs episodes
-    ax2.plot(episodes, episode_lengths, "r-", linewidth=2)
-    ax2.set_xlabel("Episode")
-    ax2.set_ylabel("Episode Length")
-    ax2.set_title("Episode Length Over Time")
-    ax2.grid(True)
+    for i, (metric_data, label) in enumerate(zip(data, data_labels)):
+        ax = axes[i]
+        steps = np.arange(len(metric_data))
 
-    # Adjust layout and save
+        # Plot raw data
+        ax.plot(steps, metric_data, "b-", alpha=0.6, label=label)
+
+        # Moving average plot
+        if len(metric_data) >= sma_window_size:
+            moving_avg = np.convolve(metric_data, np.ones(sma_window_size) / sma_window_size, mode="valid")
+            ax.plot(
+                steps[sma_window_size - 1 :],
+                moving_avg,
+                "r-",
+                label=f"Moving Average ({sma_window_size} {x_label.lower()})",
+            )
+
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(label)
+        ax.set_title(f"{label} Over Time")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper right", bbox_to_anchor=(1.05, 1), borderaxespad=0.)
+
     plt.tight_layout()
     plt.savefig(
-        os.path.join(save_dir, "training_curves.png"), dpi=300, bbox_inches="tight"
+        os.path.join(save_dir, img_name), dpi=300, bbox_inches="tight"
     )
     plt.close()
-
 
 def evaluate_policy(
     agent: BaseAgent,
     env: gym.Env,
     num_episodes: int = 100,
     save_dir: Optional[str] = None,
+    verbose: bool = True,
 ) -> Dict[str, Union[float, List[float], List[int]]]:
     """
     Evaluate a trained policy over multiple episodes and calculate reward statistics.
@@ -153,14 +168,15 @@ def evaluate_policy(
         plt.close()
 
     # Print summary statistics
-    print("\nEvaluation Summary:")
-    print(f"Number of episodes: {num_episodes}")
-    print(f"Mean reward: {mean_reward:.2f} ± {std_reward:.2f}")
-    print(f"Min reward: {min_reward:.2f}")
-    print(f"Max reward: {max_reward:.2f}")
-    print(f"Mean episode length: {mean_length:.2f} ± {std_length:.2f}")
-    print(f"Min episode length: {min_length}")
-    print(f"Max episode length: {max_length}")
+    if verbose:
+        print("\nEvaluation Summary:")
+        print(f"Number of episodes: {num_episodes}")
+        print(f"Mean reward: {mean_reward:.2f} ± {std_reward:.2f}")
+        print(f"Min reward: {min_reward:.2f}")
+        print(f"Max reward: {max_reward:.2f}")
+        print(f"Mean episode length: {mean_length:.2f} ± {std_length:.2f}")
+        print(f"Min episode length: {min_length}")
+        print(f"Max episode length: {max_length}")
 
     return {
         "mean_reward": mean_reward,
@@ -232,9 +248,9 @@ def get_env_info(env: gym.Env) -> Tuple[int, int, float]:
     Returns:
         Tuple containing (state_dim, action_dim, max_action)
     """
-    state_dim = env.observation_space.shape[0] 
-    action_dim = env.action_space.shape[0] 
-    max_action = float(env.action_space.high[0]) 
+    state_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+    max_action = float(env.action_space.high[0])
     return state_dim, action_dim, max_action
 
 
@@ -317,3 +333,26 @@ def run_evaluation(agent: BaseAgent, env: gym.Env, args: argparse.Namespace) -> 
         save_dir=os.path.dirname(args.model_path),
     )
     env.close()
+
+
+def save_expt_metadata(
+    save_dir: str,
+    hyperparameters: Dict[str, Any],
+    episode_rewards: List[float],
+    episode_lengths: List[int],
+    total_training_time: float,
+    convergence_metrics: Dict[str, List[float]],
+) -> None:
+    """Save experiment metadata to a json file."""
+    with open(os.path.join(save_dir, "training_metrics.json"), "w") as f:
+        json.dump(
+            {
+                "total_training_time": float(total_training_time),
+                "hyperparameters": hyperparameters,
+                "episode_rewards": episode_rewards,
+                "episode_lengths": episode_lengths,
+                "convergence_metrics": convergence_metrics,
+            },
+            f,
+            indent=4,
+        )

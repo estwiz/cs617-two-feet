@@ -11,8 +11,9 @@ import argparse
 from datetime import datetime
 import matplotlib.pyplot as plt
 from typing import List
+import time
 
-from common.utils import run_evaluation
+from common.utils import plot_metrics, print_episode_info, run_evaluation, save_expt_metadata
 
 
 class Policy(nn.Module):
@@ -169,43 +170,6 @@ class A2C:
         self.critic.load_state_dict(torch.load(f'{directory}/a2c_critic_{name}.pth'))
 
 
-def plot_training_curves(
-    rewards: List[float], episode_lengths: List[int], save_dir: str
-) -> None:
-    """Create plots of training metrics."""
-    episodes = np.arange(len(episode_lengths))
-    # Create figure with two subplots
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
-
-    # Plot reward vs total steps
-    ax1.plot(episodes, rewards, "b-", linewidth=2, label="Episode Reward")
-    
-    # Add mean reward line only if we have enough episodes
-    if len(rewards) >= 100:
-        mean_rewards = np.convolve(rewards, np.ones(100)/100, mode='valid')
-        ax1.plot(episodes[99:], mean_rewards, "r--", linewidth=2, label="Mean Reward (100 episodes)")
-    
-    ax1.set_xlabel("Episode")
-    ax1.set_ylabel("Episode Reward")
-    ax1.set_title("Training Progress")
-    ax1.grid(True)
-    ax1.legend()
-
-    # Plot episode length vs episodes
-    ax2.plot(episodes, episode_lengths, "r-", linewidth=2)
-    ax2.set_xlabel("Episode")
-    ax2.set_ylabel("Episode Length")
-    ax2.set_title("Episode Length Over Time")
-    ax2.grid(True)
-
-    # Adjust layout and save
-    plt.tight_layout()
-    plt.savefig(
-        os.path.join(save_dir, "training_curves.png"), dpi=300, bbox_inches="tight"
-    )
-    plt.close()
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", default="BipedalWalker-v3", type=str)
@@ -262,6 +226,14 @@ def main():
     all_rewards = []
     all_episode_lengths = []
 
+    # Initialize lists to track losses
+    actor_losses = []
+    critic_losses = []
+    entropies = []
+
+    total_training_start = time.time()
+    episode_start = time.time()
+
     for t in range(args.max_timesteps):
         episode_timesteps += 1
         action = agent.select_action(state)
@@ -283,27 +255,63 @@ def main():
                 entropy_coef=args.entropy_coef,
                 gae_lambda=args.gae_lambda
             )
+            # Save losses
+            actor_losses.append(float(train_info['actor_loss']))
+            critic_losses.append(float(train_info['critic_loss']))
+            entropies.append(float(train_info['entropy']))
+
             states, actions, rewards, next_states, dones = [], [], [], [], []
 
             if t % 100 == 0:
                 print(f"Step {t}, Actor Loss: {train_info['actor_loss']:.3f}, Critic Loss: {train_info['critic_loss']:.3f}, Entropy: {train_info['entropy']:.3f}")
 
         if done:
-            print(f"Total T: {t+1} Episode Num: {episode_num+1} Episode T: {episode_timesteps} Reward: {episode_reward:.3f}")
+            print_episode_info(t+1, episode_num, episode_timesteps, episode_reward, time.time() - episode_start)
             # Store episode metrics
-            all_rewards.append(episode_reward)
-            all_episode_lengths.append(episode_timesteps)
+            all_rewards.append(float(episode_reward))
+            all_episode_lengths.append(int(episode_timesteps))
             state, _ = env.reset()
             episode_reward = 0
             episode_timesteps = 0
             episode_num += 1
+            episode_start = time.time()
 
         if (t + 1) % args.save_freq == 0:
             agent.save(save_dir, f"step_{t+1}")
     
-    # Plot training curves at the end of training
-    plot_training_curves(all_rewards, all_episode_lengths, save_dir)
+    # Calculate and print total training time
+    total_training_time = time.time() - total_training_start
+    print(f"\nTotal training time: {total_training_time:.2f} seconds")
 
+    # Save training curves and metadata
+    plot_metrics(
+        data=[all_rewards, all_episode_lengths],
+        data_labels=["Episode Reward", "Episode Length"],
+        x_label="Episodes",
+        sma_window_size=100,
+        save_dir=save_dir,
+        img_name="training_curves.png",
+    )
+    plot_metrics(
+        data=[actor_losses, critic_losses, entropies],
+        data_labels=["Actor Loss", "Critic Loss", "Entropy"],
+        x_label="Steps",
+        sma_window_size=10_000,
+        save_dir=save_dir,
+        img_name="convergence_metrics.png",
+    )
+    save_expt_metadata(
+        save_dir=save_dir,
+        hyperparameters= vars(args),
+        episode_rewards=all_rewards,
+        episode_lengths=all_episode_lengths,
+        total_training_time=total_training_time,
+        convergence_metrics={
+            "actor_losses": actor_losses,
+            "critic_losses": critic_losses,
+            "entropies": entropies,
+        }
+    )
     env.close()
 
 
