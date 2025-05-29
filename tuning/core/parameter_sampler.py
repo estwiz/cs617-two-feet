@@ -12,7 +12,6 @@ class ParameterSampler:
         params = {}
         for param_name, param_range in self.config.hyperparameters.items():
             if param_range.step is not None:
-                # Integer parameter
                 params[param_name] = trial.suggest_int(
                     param_name,
                     int(param_range.min_val),

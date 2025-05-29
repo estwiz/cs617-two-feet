@@ -69,7 +69,6 @@ class OptimizationManager:
             json.dump(stats, f, indent=4)
 
     def __print_results(self, study: optuna.Study) -> None:
-        """Print optimization results."""
         print("\nBest trial:")
         trial = study.best_trial
         print(f"  Value: {trial.value}")
