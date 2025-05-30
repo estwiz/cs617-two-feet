@@ -9,12 +9,13 @@ import seaborn as sns
 
 from common.utils import (
     EvalWrapper,
-    plot_training_curves,
+    plot_metrics,
     get_device,
     run_evaluation,
+    save_expt_metadata,
     setup_environment,
     get_env_info,
-    setup_save_directory,
+    setup_save_directory,   
     setup_video_recording,
     print_episode_info,
 )
@@ -246,7 +247,23 @@ def train_a2c(agent, env, args, save_dir):
     print(f"\nTotal training time: {total_training_time:.2f} seconds")
 
     # Plot training curves
-    plot_training_curves(episode_rewards, episode_lengths, save_dir)
+    plot_metrics(
+        data=[episode_rewards, episode_lengths],
+        data_labels=["Episode Reward", "Episode Length"],
+        img_name="training_curves.png",
+        x_label="Episodes",
+        sma_window_size=10,
+        save_dir=save_dir,
+    )
+    # Save training curves and metadata
+    save_expt_metadata(
+        save_dir=save_dir,
+        hyperparameters=args,
+        episode_rewards=episode_rewards,
+        episode_lengths=episode_lengths,
+        total_training_time=total_training_time,
+        convergence_metrics={},
+    )
 
 
 def main():
