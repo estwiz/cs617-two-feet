@@ -13,9 +13,6 @@ from common.base_agent import BaseAgent
 
 
 def get_device() -> torch.device:
-    """
-    Get the device to use for training.
-    """
     if torch.cuda.is_available():
         return torch.device("cuda")
     else:
@@ -30,11 +27,10 @@ def plot_metrics(
     img_name: str,
     sma_window_size: int
 ) -> None:
-    """Create plots of metrics with moving averages"""
+
     n_metrics = len(data)
     fig, axes = plt.subplots(n_metrics, 1, figsize=(12, 4 * n_metrics))
 
-    # If only one metric, wrap axes in a list for consistent indexing
     if n_metrics == 1:
         axes = [axes]
 
@@ -42,10 +38,8 @@ def plot_metrics(
         ax = axes[i]
         steps = np.arange(len(metric_data))
 
-        # Plot raw data
         ax.plot(steps, metric_data, "b-", alpha=0.6, label=label)
 
-        # Moving average plot
         if len(metric_data) >= sma_window_size:
             moving_avg = np.convolve(metric_data, np.ones(sma_window_size) / sma_window_size, mode="valid")
             ax.plot(
@@ -111,7 +105,6 @@ def evaluate_policy(
                 f"Episode {episode + 1}/{num_episodes} - Reward: {episode_reward:.2f}"
             )
 
-    # Calculate statistics
     mean_reward = float(np.mean(all_rewards))
     std_reward = float(np.std(all_rewards))
     min_reward = float(np.min(all_rewards))
@@ -123,14 +116,10 @@ def evaluate_policy(
     max_length = int(np.max(all_lengths))
 
     if save_dir is not None:
-        # Create evaluation subdirectory
         eval_dir = os.path.join(save_dir, "evaluation")
         os.makedirs(eval_dir, exist_ok=True)
 
-        # Create figure with two subplots
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
-
-        # Plot reward distribution
         ax1.hist(all_rewards, bins=20, alpha=0.75, color="blue")
         ax1.axvline(
             mean_reward,
@@ -144,8 +133,6 @@ def evaluate_policy(
         ax1.set_ylabel("Frequency")
         ax1.legend()
         ax1.grid(True, alpha=0.3)
-
-        # Plot episode length distribution
         ax2.hist(all_lengths, bins=20, alpha=0.75, color="green")
         ax2.axvline(
             mean_length,
@@ -159,15 +146,11 @@ def evaluate_policy(
         ax2.set_ylabel("Frequency")
         ax2.legend()
         ax2.grid(True, alpha=0.3)
-
-        # Adjust layout and save
         plt.tight_layout()
         plt.savefig(
             os.path.join(eval_dir, "distributions.png"), dpi=300, bbox_inches="tight"
         )
         plt.close()
-
-    # Print summary statistics
     if verbose:
         print("\nEvaluation Summary:")
         print(f"Number of episodes: {num_episodes}")
@@ -203,7 +186,6 @@ class EvalWrapper(gym.Wrapper):
     def step(
         self, action: np.ndarray
     ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
-        # Use evaluation mode for actions
         if self.last_observation is None:
             raise ValueError("Environment must be reset before stepping")
         eval_action = self.agent.select_action(self.last_observation, evaluate=True)
@@ -313,18 +295,15 @@ def load_model_for_evaluation(
     if model_path is None:
         raise ValueError("Model path must be provided for evaluation mode")
 
-    # Get model directory and step number
     model_dir = os.path.dirname(model_path)
     step_name = os.path.basename(model_path).replace(".pth", "").split("_")[-1]
     model_identifier = f"step_{step_name}"
 
-    # Load the trained model
     agent.load(directory=model_dir, name=model_identifier)
     print(f"Loaded model from {model_path}")
 
 
 def run_evaluation(agent: BaseAgent, env: gym.Env, args: argparse.Namespace) -> None:
-    """Run evaluation mode."""
     load_model_for_evaluation(agent, args.model_path)
     evaluate_policy(
         agent,
@@ -343,7 +322,6 @@ def save_expt_metadata(
     total_training_time: float,
     convergence_metrics: Dict[str, List[float]],
 ) -> None:
-    """Save experiment metadata to a json file."""
     with open(os.path.join(save_dir, "training_metrics.json"), "w") as f:
         json.dump(
             {
