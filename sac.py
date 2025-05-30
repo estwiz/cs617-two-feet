@@ -1,3 +1,4 @@
+from typing import Dict
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -32,10 +33,13 @@ sns.set_style("whitegrid")
 
 
 class SAC(BaseAgent):
-    """Soft Actor-Critic algorithm."""
-
     def __init__(
-        self, state_dim: int, action_dim: int, max_action: float, device: torch.device, lr: float = 3e-4
+        self,
+        state_dim: int,
+        action_dim: int,
+        max_action: float,
+        device: torch.device,
+        lr: float = 3e-4,
     ):
         super().__init__(state_dim, action_dim, max_action, device)
 
@@ -48,7 +52,7 @@ class SAC(BaseAgent):
         self.critic_target = Critic(state_dim, action_dim).to(device)
         self.critic_target.load_state_dict(self.critic.state_dict())
 
-        # Automatically tune temperature
+        # Temperature
         self.target_entropy = -torch.prod(torch.Tensor([action_dim]).to(device)).item()
         self.log_alpha = torch.zeros(1, requires_grad=True, device=device)
         self.alpha_optimizer = optim.Adam([self.log_alpha], lr=lr)
@@ -62,7 +66,13 @@ class SAC(BaseAgent):
         action, _ = self.actor.sample(state)
         return action.cpu().data.numpy().flatten()
 
-    def train(self, replay_buffer, batch_size=256, gamma=0.99, tau=0.005):
+    def train(
+        self,
+        replay_buffer: ReplayBuffer,
+        batch_size: int = 256,
+        gamma: float = 0.99,
+        tau: float = 0.005,
+    ) -> Dict[str, float]:
         states, actions, rewards, next_states, dones = replay_buffer.sample(batch_size)
 
         states = states.to(self.device)
@@ -70,10 +80,8 @@ class SAC(BaseAgent):
         rewards = rewards.to(self.device)
         next_states = next_states.to(self.device)
         dones = dones.to(self.device)
-
         alpha = self.log_alpha.exp()
 
-        # Update critic
         with torch.no_grad():
             next_action, next_log_pi = self.actor.sample(next_states)
             target_q1, target_q2 = self.critic_target(next_states, next_action)
@@ -89,20 +97,16 @@ class SAC(BaseAgent):
         critic_loss.backward()
         self.critic_optimizer.step()
 
-        # Update actor
         action_new, log_pi = self.actor.sample(states)
         q1_new, q2_new = self.critic(states, action_new)
         q_new = torch.min(q1_new, q2_new)
 
         actor_loss = (alpha * log_pi - q_new).mean()
-
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()
 
-        # Update temperature
         alpha_loss = -(self.log_alpha * (log_pi + self.target_entropy).detach()).mean()
-
         self.alpha_optimizer.zero_grad()
         alpha_loss.backward()
         self.alpha_optimizer.step()
@@ -129,77 +133,27 @@ class SAC(BaseAgent):
 
 
 def parse_args():
-    """Parse command line arguments."""
+    # fmt: off
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", default="BipedalWalker-v3", type=str)
-    parser.add_argument(
-        "--seed", default=0, type=int, help="Random seed for reproducibility"
-    )
-    parser.add_argument(
-        "--max_timesteps",
-        default=500_000,
-        type=int,
-        help="Maximum number of timesteps to train for",
-    )
-    parser.add_argument(
-        "--batch_size", default=256, type=int, help="Batch size for training"
-    )
-    parser.add_argument(
-        "--save_freq", default=50000, type=int, help="Frequency to save model weights"
-    )
+    parser.add_argument("--hardcore", action="store_true", help="Use hard core mode")
+    parser.add_argument("--seed", default=0, type=int, help="Random seed for reproducibility")
+    parser.add_argument("--max_timesteps", default=500_000, type=int, help="Maximum number of timesteps to train for")
+    parser.add_argument("--batch_size", default=256, type=int, help="Batch size for training")
+    parser.add_argument("--save_freq", default=50000, type=int, help="Frequency to save model weights")
     parser.add_argument("--save_video", action="store_true")
     parser.add_argument("--evaluate", action="store_true", help="Run evaluation mode")
     parser.add_argument("--model_path", type=str, help="Path to the model to evaluate")
-    parser.add_argument(
-        "--eval_episodes",
-        type=int,
-        default=100,
-        help="Number of episodes for evaluation",
-    )
-    # Add new hyperparameters
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=3e-4,
-        help="Learning rate for all networks",
-    )
-    parser.add_argument(
-        "--gamma",
-        type=float,
-        default=0.99,
-        help="Discount factor",
-    )
-    parser.add_argument(
-        "--tau",
-        type=float,
-        default=0.005,
-        help="Target network update rate",
-    )
-    parser.add_argument(
-        "--train_freq",
-        type=int,
-        default=64,
-        help="How often to train the agent (in environment steps)",
-    )
-    parser.add_argument(
-        "--gradient_steps",
-        type=int,
-        default=32,
-        help="Number of gradient steps to perform per training iteration",
-    )
-    parser.add_argument(
-        "--learning_start",
-        type=int,
-        default=10_000,
-        help="Number of steps to wait before training",
-    )
-    parser.add_argument(
-        "--replay_buffer_size",
-        type=int,
-        default=300_000,
-        help="Size of the replay buffer",
-    )
+    parser.add_argument("--eval_episodes", type=int, default=100, help="Number of episodes for evaluation")
+    parser.add_argument("--lr", type=float, default=3e-4, help="Learning rate for all networks")
+    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
+    parser.add_argument("--tau", type=float, default=0.005, help="Target network update rate")
+    parser.add_argument("--train_freq", type=int, default=64, help="How often to train the agent (in environment steps)")
+    parser.add_argument("--gradient_steps", type=int, default=32, help="Number of gradient steps to perform per training iteration")
+    parser.add_argument("--learning_start", type=int, default=10_000, help="Number of steps to wait before training")
+    parser.add_argument("--replay_buffer_size", type=int, default=300_000, help="Size of the replay buffer")
     return parser.parse_args()
+    # fmt: on
 
 
 def train_sac(
@@ -229,59 +183,49 @@ def train_sac(
 
     for t in range(args.max_timesteps):
         episode_steps += 1
-
-        # Select and perform action
         action = agent.select_action(state)
         next_state, reward, terminated, truncated, _ = env.step(action)
         done = terminated or truncated
 
-        # Store data in replay buffer
         replay_buffer.push(state, action, reward, next_state, done)
-
         state = next_state
         episode_reward += reward
 
-        # Train agent
         if len(replay_buffer) > args.learning_start and t % args.train_freq == 0:
             # Perform multiple gradient steps
             for _ in range(args.gradient_steps):
                 train_info = agent.train(
-                    replay_buffer=replay_buffer, 
+                    replay_buffer=replay_buffer,
                     batch_size=args.batch_size,
                     gamma=args.gamma,
-                    tau=args.tau
+                    tau=args.tau,
                 )
                 actor_losses.append(train_info["actor_loss"])
                 critic_losses.append(train_info["critic_loss"])
                 alpha_losses.append(train_info["alpha_loss"])
 
         if done:
-            # Print episode info
             episode_time = time.time() - episode_start
             print_episode_info(
                 t + 1, episode_num, episode_steps, episode_reward, episode_time
             )
 
-            # Track metrics
             episode_rewards.append(float(episode_reward))
             episode_lengths.append(int(episode_steps))
 
-            # Reset environment
+            # Reset env
             state, _ = env.reset()
             episode_reward = 0
             episode_steps = 0
             episode_num += 1
             episode_start = time.time()
 
-        # Save model
         if (t + 1) % args.save_freq == 0:
             agent.save(save_dir, f"step_{t+1}")
 
-    # Calculate and print total training time
     total_training_time = time.time() - total_training_start
     print(f"\nTotal training time: {total_training_time:.2f} seconds")
 
-    # Save training curves and metadata
     plot_metrics(
         data=[episode_rewards, episode_lengths],
         data_labels=["Episode Reward", "Episode Length"],
@@ -314,12 +258,9 @@ def train_sac(
 
 def main():
     args = parse_args()
-
-    # Set up environment
-    env = setup_environment(args.env, args.seed)
+    env = setup_environment(env_name=args.env, seed=args.seed, hardcore=args.hardcore)
     state_dim, action_dim, max_action = get_env_info(env)
 
-    # Initialize agent
     device = get_device()
     print(f"Using device: {device}")
     agent = SAC(state_dim, action_dim, max_action, device, lr=args.lr)
@@ -328,18 +269,11 @@ def main():
         run_evaluation(agent, env, args)
         return
 
-    # Set up save directory and video recording
     save_dir = setup_save_directory("sac", args.env)
     if args.save_video:
         env = setup_video_recording(env, save_dir)
 
-    # Run training with custom hyperparameters
-    train_sac(
-        agent=agent,
-        env=env,
-        args=args,
-        save_dir=save_dir
-    )
+    train_sac(agent=agent, env=env, args=args, save_dir=save_dir)
     env.close()
 
 
