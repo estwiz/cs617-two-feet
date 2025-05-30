@@ -200,7 +200,7 @@ class EvalWrapper(gym.Wrapper):
 
 
 def setup_environment(
-    env_name: str, seed: int, render_mode: str = "rgb_array"
+    env_name: str, seed: int, render_mode: str = "rgb_array", hardcore: bool=False
 ) -> gym.Env:
     """
     Set up the gym environment with proper seeding.
@@ -213,7 +213,7 @@ def setup_environment(
     Returns:
         gym.Env: Configured environment
     """
-    env = gym.make(env_name, render_mode=render_mode)
+    env = gym.make(env_name, render_mode=render_mode, hardcore=hardcore)
     env.reset(seed=seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -247,7 +247,7 @@ def setup_save_directory(algorithm: str, env_name: str) -> str:
     return save_dir
 
 
-def setup_video_recording(env: gym.Env, save_dir: str) -> gym.Env:
+def setup_video_recording(env: gym.Env, save_dir: str, episode_freq: int = 50) -> gym.Env:
     """
     Set up video recording for the environment.
 
@@ -258,7 +258,7 @@ def setup_video_recording(env: gym.Env, save_dir: str) -> gym.Env:
     Returns:
         gym.Env: Environment wrapped with video recording
     """
-    return RecordVideo(env, f"{save_dir}/videos", episode_trigger=lambda x: x % 50 == 0)
+    return RecordVideo(env, f"{save_dir}/videos", episode_trigger=lambda x: x % episode_freq == 0)
 
 
 def print_episode_info(
@@ -305,6 +305,12 @@ def load_model_for_evaluation(
 
 def run_evaluation(agent: BaseAgent, env: gym.Env, args: argparse.Namespace) -> None:
     load_model_for_evaluation(agent, args.model_path)
+    if args.save_video:
+        env = setup_video_recording(
+            env=env,
+            save_dir=os.path.join(os.path.dirname(args.model_path), "evaluation"),
+            episode_freq=10,
+        )
     evaluate_policy(
         agent,
         env,
