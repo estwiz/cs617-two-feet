@@ -4,7 +4,6 @@ import torch
 
 
 class ReplayBuffer:
-    """A simple FIFO experience replay buffer."""
     
     def __init__(self, capacity: int):
         """
@@ -53,8 +52,6 @@ class ReplayBuffer:
         batch = np.random.choice(len(self.buffer), batch_size, replace=False)
         samples = [self.buffer[i] for i in batch]
         assert all(s is not None for s in samples), "Buffer contains None values"
-
-        # Convert lists to numpy arrays before creating tensors for better performance
         states = np.array([s[0] for s in samples])
         actions = np.array([s[1] for s in samples])
         rewards = np.array([s[2] for s in samples])

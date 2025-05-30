@@ -4,7 +4,6 @@ import torch.nn as nn
 from torch.distributions import Normal
 
 class Actor(nn.Module):
-    """Actor network for policy-based algorithms."""
     
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256, max_action: float = 1.0):
         """

@@ -4,7 +4,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class Critic(nn.Module):
-    """Critic network that outputs Q-values for state-action pairs."""
     
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: int = 256):
         """

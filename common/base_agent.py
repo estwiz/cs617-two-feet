@@ -9,7 +9,6 @@ sns.set_context("paper", font_scale=1.5)
 sns.set_style("whitegrid")
 
 class BaseAgent:
-    """Base class for reinforcement learning agents."""
     
     def __init__(self, state_dim: int, action_dim: int, max_action: float, device: torch.device):
         self.state_dim = state_dim
