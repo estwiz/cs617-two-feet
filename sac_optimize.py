@@ -2,7 +2,7 @@ import optuna
 import torch
 import numpy as np
 import gymnasium as gym
-from sac_biped_walker import SAC
+from sac import SAC
 from common.utils import (
     setup_environment,
     get_env_info,

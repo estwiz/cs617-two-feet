@@ -26,7 +26,7 @@ uv sync
 
 To train the SAC agent with default parameters:
 ```bash
-python sac_biped_walker.py
+python sac.py
 ```
 
 #### SAC Command Line Arguments
@@ -41,12 +41,12 @@ python sac_biped_walker.py
 
 Example with custom parameters:
 ```bash
-python sac_biped_walker.py --max_timesteps 2000000 --save_video
+python sac.py --max_timesteps 2000000 --save_video
 ```
 
 Evaluation after model is trained
 ```bash
-python sac_biped_walker.py --evaluate \
+python sac.py --evaluate \
     --model_path results/sac_BipedalWalker-v3_20250522_144908/sac_critic_step_300000.pth  \
     --eval_episodes 100
 ```
@@ -55,7 +55,7 @@ python sac_biped_walker.py --evaluate \
 
 To train the A2C agent with default parameters:
 ```bash
-python a2c_biped_walker.py
+python a2c.py
 ```
 
 #### A2C Command Line Arguments
@@ -70,12 +70,12 @@ python a2c_biped_walker.py
 
 Example with custom parameters:
 ```bash
-python a2c_biped_walker.py --max_timesteps 2000000 --save_video
+python a2c.py --max_timesteps 2000000 --save_video
 ```
 
 Evaluation after model is trained
 ```bash
-python a2c_biped_walker.py --evaluate \
+python a2c.py --evaluate \
     --model_path results/a2c_BipedalWalker-v3_20250523_014106/a2c_critic_step_300000.pth \
     --eval_episodes 100
 ```

@@ -2,7 +2,7 @@ from typing import Dict, Any
 import gymnasium as gym
 import numpy as np
 import torch
-from sac_biped_walker import SAC
+from sac import SAC
 from common.replay_buffer import ReplayBuffer
 from tuning.config.optimization_config import OptimizationConfig
 from tuning.trainers.base_trainer import BaseTrainer
