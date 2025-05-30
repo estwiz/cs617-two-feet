@@ -11,7 +11,7 @@ from tuning.trainers.base_trainer import BaseTrainer
 class SACTrainer(BaseTrainer):
     def __init__(self, config: OptimizationConfig, learning_start: int = 10_000):
         super().__init__(config)
-        self.replay_buffer = ReplayBuffer(1_000_000)
+        self.replay_buffer = ReplayBuffer(300_000)
         self.learning_start = learning_start
         self.t = 0
 
