@@ -17,7 +17,7 @@ from common.utils import plot_metrics, print_episode_info, run_evaluation, save_
 
 
 class Policy(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim = 128,log_std_init=0.0):
+    def __init__(self, state_dim, action_dim, hidden_dim=128, log_std_init=0.0):
         super().__init__()
         self.activation = torch.tanh
 
@@ -50,7 +50,7 @@ class Policy(nn.Module):
 
 
 class Value(nn.Module):
-    def __init__(self, state_dim,hidden_dim = 128):
+    def __init__(self, state_dim, hidden_dim=128):
         super().__init__()
         self.activation = torch.tanh
 
@@ -71,11 +71,11 @@ class Value(nn.Module):
 
 
 class A2C:
-    def __init__(self, state_dim, action_dim, max_action, device, hidden_dim = 128, log_std_init = 0.0 ,learning_rate=3e-4):
-        self.actor = Policy(state_dim, action_dim, hidden_dim=hidden_dim,log_std_init=log_std_init).to(device)
+    def __init__(self, state_dim, action_dim, max_action, device, hidden_dim=128, log_std_init=0.0, learning_rate=3e-4):
+        self.actor = Policy(state_dim, action_dim, hidden_dim=hidden_dim, log_std_init=log_std_init).to(device)
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=learning_rate)
 
-        self.critic = Value(state_dim,hidden_dim=hidden_dim).to(device)
+        self.critic = Value(state_dim, hidden_dim=hidden_dim).to(device)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=learning_rate)
 
         self.max_action = max_action
@@ -199,7 +199,6 @@ def main():
 
     env = gym.make(args.env, render_mode="rgb_array")
 
-
     env.reset(seed=args.seed)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -209,7 +208,8 @@ def main():
     max_action = float(env.action_space.high[0])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    agent = A2C(state_dim, action_dim, max_action, device, log_std_init = args.log_std_init,hidden_dim=args.hidden_dim,learning_rate=args.learning_rate)
+    agent = A2C(state_dim, action_dim, max_action, device, log_std_init=args.log_std_init, hidden_dim=args.hidden_dim,
+                learning_rate=args.learning_rate)
 
     if args.evaluate:
         run_evaluation(agent, env, args)
@@ -217,23 +217,14 @@ def main():
     if args.save_video:
         env = RecordVideo(env, f"{save_dir}/videos", episode_trigger=lambda x: x % 50 == 0)
 
-
     state, _ = env.reset()
     episode_reward = 0
     episode_timesteps = 0
     episode_num = 0
 
     states, actions, rewards, next_states, dones = [], [], [], [], []
-    
-    # Initialize lists to track training metrics
-    all_rewards = []
-    all_episode_lengths = []
 
-    # Initialize lists to track losses
-    actor_losses = []
-    critic_losses = []
-    entropies = []
-
+    all_rewards, all_episode_lengths, actor_losses, critic_losses, entropies = [], [], [], [], []
     total_training_start = time.time()
     episode_start = time.time()
 
@@ -258,7 +249,6 @@ def main():
                 entropy_coef=args.entropy_coef,
                 gae_lambda=args.gae_lambda
             )
-            # Save losses
             actor_losses.append(float(train_info['actor_loss']))
             critic_losses.append(float(train_info['critic_loss']))
             entropies.append(float(train_info['entropy']))
@@ -266,11 +256,11 @@ def main():
             states, actions, rewards, next_states, dones = [], [], [], [], []
 
             if t % 100 == 0:
-                print(f"Step {t}, Actor Loss: {train_info['actor_loss']:.3f}, Critic Loss: {train_info['critic_loss']:.3f}, Entropy: {train_info['entropy']:.3f}")
+                print(
+                    f"Step {t}, Actor Loss: {train_info['actor_loss']:.3f}, Critic Loss: {train_info['critic_loss']:.3f}, Entropy: {train_info['entropy']:.3f}")
 
         if done:
-            print_episode_info(t+1, episode_num, episode_timesteps, episode_reward, time.time() - episode_start)
-            # Store episode metrics
+            print_episode_info(t + 1, episode_num, episode_timesteps, episode_reward, time.time() - episode_start)
             all_rewards.append(float(episode_reward))
             all_episode_lengths.append(int(episode_timesteps))
             state, _ = env.reset()
@@ -280,13 +270,11 @@ def main():
             episode_start = time.time()
 
         if (t + 1) % args.save_freq == 0:
-            agent.save(save_dir, f"step_{t+1}")
-    
-    # Calculate and print total training time
+            agent.save(save_dir, f"step_{t + 1}")
+
     total_training_time = time.time() - total_training_start
     print(f"\nTotal training time: {total_training_time:.2f} seconds")
 
-    # Save training curves and metadata
     plot_metrics(
         data=[all_rewards, all_episode_lengths],
         data_labels=["Episode Reward", "Episode Length"],
@@ -305,7 +293,7 @@ def main():
     )
     save_expt_metadata(
         save_dir=save_dir,
-        hyperparameters= vars(args),
+        hyperparameters=vars(args),
         episode_rewards=all_rewards,
         episode_lengths=all_episode_lengths,
         total_training_time=total_training_time,
