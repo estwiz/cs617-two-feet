@@ -198,8 +198,7 @@ def main():
     os.makedirs(save_dir, exist_ok=True)
 
     env = gym.make(args.env, render_mode="rgb_array")
-    if args.save_video:
-        env = RecordVideo(env, f"{save_dir}/videos", episode_trigger=lambda x: x % 50 == 0)
+
 
     env.reset(seed=args.seed)
     torch.manual_seed(args.seed)
@@ -211,9 +210,13 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     agent = A2C(state_dim, action_dim, max_action, device, log_std_init = args.log_std_init,hidden_dim=args.hidden_dim,learning_rate=args.learning_rate)
+
     if args.evaluate:
         run_evaluation(agent, env, args)
         return
+    if args.save_video:
+        env = RecordVideo(env, f"{save_dir}/videos", episode_trigger=lambda x: x % 50 == 0)
+
 
     state, _ = env.reset()
     episode_reward = 0
